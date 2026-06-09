@@ -1,0 +1,7 @@
+ccxt
+yfinance
+vnstock
+pandas
+pyTelegramBotAPI
+streamlit
+tabulate
