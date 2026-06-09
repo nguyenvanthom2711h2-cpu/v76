@@ -1,7 +1,5 @@
-ccxt==4.2.19
+streamlit
 yfinance
-vnstock
 pandas
 pyTelegramBotAPI
-streamlit
-tabulate
+pytz
