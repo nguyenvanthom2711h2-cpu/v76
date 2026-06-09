@@ -99,3 +99,48 @@ def main():
     st.markdown("---")
     
     current_time = datetime.now().strftime('%H:%M:%S')
+    st.sidebar.success(f"Dữ liệu thực - Cập nhật: {current_time}")
+    st.sidebar.write("⏱ Tự động làm mới sau 60 giây")
+
+    for asset in LIST_ASSETS:
+        st.markdown(f"### 💠 {asset['name']}")
+        rows = []
+        
+        with st.status(f"Đang đồng bộ khung thời gian cho {asset['name']}...", expanded=False) as status:
+            for tf in TIMEFRAMES:
+                df = fetch_global_data(asset['symbol'], tf)
+                if df is not None:
+                    last = df.iloc[-1]
+                    curr_p = last['c']
+                    r, r9, r45 = last['rsi'], last['rsi9'], last['rsi45']
+                    
+                    # Logic Trạng thái RSI
+                    if r > r9 and r > r45: r_stat = "TĂNG"
+                    elif r < r9 and r < r45: r_stat = "GIẢM"
+                    elif r9 > r > r45: r_stat = "CHỈNH (-)"
+                    elif r45 > r > r9: r_stat = "HỒI (+)"
+                    else: r_stat = "YẾU"
+
+                    rows.append({
+                        "KHUNG": tf.upper(),
+                        "SÓNG": "TĂNG" if curr_p > last['ma20'] else "GIẢM",
+                        "RSI 9/45": r_stat,
+                        "P/MA50": "TĂNG" if curr_p > last['ma50'] else "GIẢM",
+                        "MA 10/20": "TĂNG" if last['ma10'] > last['ma20'] else "GIẢM",
+                        "RSI": int(r),
+                        "GIÁ HIỆN TẠI": f"{curr_p:,.1f}"
+                    })
+            status.update(label=f"Hoàn thành {asset['name']}", state="complete")
+        
+        if rows:
+            display_df = pd.DataFrame(rows)
+            st.table(display_df.style.applymap(color_status, subset=['SÓNG', 'RSI 9/45', 'P/MA50', 'MA 10/20']))
+        else:
+            st.error(f"⚠️ Nguồn Yahoo Finance đang nghẽn cho {asset['name']}. Đang chờ thử lại...")
+
+    # Cơ chế Auto-Reload
+    time.sleep(60)
+    st.rerun()
+
+if __name__ == "__main__":
+    main()
