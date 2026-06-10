@@ -1,12 +1,10 @@
 import streamlit as st
 import yfinance as yf
-from vnstock.api.quote import Quote
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import warnings
 import pytz
-import os, sys, contextlib
 
 warnings.filterwarnings("ignore")
 
@@ -18,164 +16,128 @@ CHAT_ID = '6095817110'
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
 LIST_ASSETS = [
-    {"name": "BITCOIN", "symbol": "BTC-USD", "source": "yahoo"},
-    {"name": "VÀNG", "symbol": "GC=F", "source": "yahoo"},
-    {"name": "VN-INDEX", "symbol": "VNINDEX", "source": "vnstock"}
+    {"name": "BITCOIN", "symbol": "BTC-USD"},
+    {"name": "VÀNG", "symbol": "GC=F"},
+    {"name": "VN-INDEX", "symbol": "^VNINDEX"}
 ]
 
-TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '3d', '1w', '1M', '3M']
-WAIT_TIME = 60 
+# Danh sách khung thời gian khớp theo bảng yêu cầu
+TIMEFRAMES = ['1h', '4h', '8h', '12h', '1d', '3d', '1w', '1m']
 
-last_alerts = {}
-
-@contextlib.contextmanager
-def mute_stdout():
-    with open(os.devnull, "w", encoding="utf-8") as devnull:
-        old_stdout = sys.stdout
-        sys.stdout = devnull
-        try: yield
-        finally: sys.stdout = old_stdout
+st.set_page_config(page_title="Master Trade Dashboard", layout="wide")
 
 # ==========================================
-# 2. BỘ NÃO TÍNH TOÁN (RMA WILDER'S)
+# 2. HÀM TÍNH TOÁN KỸ THUẬT (RMA WILDER'S)
 # ==========================================
 def calculate_indicators(df):
-    if df is None or len(df) < 15: return None
+    if df is None or len(df) < 20: return None
     try:
         df = df.copy()
-        # Đảm bảo cột giá là 1 chiều
-        if 'c' not in df.columns and 'Close' in df.columns:
-            df['c'] = df['Close']
-            
-        df['ma20'] = df['c'].rolling(window=20, min_periods=1).mean()
-        df['ma50'] = df['c'].rolling(window=50, min_periods=1).mean()
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        delta = df['c'].diff()
+        # MA chuẩn
+        df['ma10'] = df['Close'].rolling(window=10).mean()
+        df['ma20'] = df['Close'].rolling(window=20).mean()
+        df['ma50'] = df['Close'].rolling(window=50, min_periods=10).mean()
+        
+        # RSI Wilder's
+        delta = df['Close'].diff()
         gain = delta.clip(lower=0); loss = -delta.clip(upper=0)
         avg_gain = gain.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
         
-        df['rsi'] = 100 - (100 / (1 + avg_gain / avg_loss))
-        df['rsi9'] = df['rsi'].rolling(9, min_periods=1).mean()
-        df['rsi45'] = df['rsi'].rolling(45, min_periods=1).mean()
+        df['rsi_val'] = 100 - (100 / (1 + avg_gain / avg_loss))
+        df['rsi9'] = df['rsi_val'].rolling(9, min_periods=1).mean()
+        df['rsi45'] = df['rsi_val'].rolling(45, min_periods=1).mean()
         return df
     except: return None
 
 # ==========================================
-# 3. TRUY XUẤT DỮ LIỆU ĐA NGUỒN (FIX VN-INDEX)
+# 3. TRUY XUẤT DỮ LIỆU ĐA TẦNG
 # ==========================================
-def resample_ohlc(df, rule):
-    df['ts'] = pd.to_datetime(df['ts'])
-    df.set_index('ts', inplace=True)
-    logic = {'o':'first', 'h':'max', 'l':'min', 'c':'last', 'v':'sum'}
-    return df.resample(rule).agg(logic).dropna().reset_index()
-
 @st.cache_data(ttl=30)
-def get_unified_data(asset, tf):
+def get_data(symbol, tf):
     try:
-        # --- NGUỒN VNSTOCK (SSI) CHO VN-INDEX ---
-        if asset['source'] == "vnstock":
-            with mute_stdout():
-                q = Quote(symbol=asset['symbol'], source='SSI')
-                v_tf = '1H' if any(x in tf for x in ['m', 'h', 'H']) else '1D'
-                # Tải history đủ dài để gộp nến
-                start_date = '2020-01-01' if v_tf == '1D' else (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-                df = q.history(start=start_date, interval=v_tf)
-                if df is None or df.empty: return None
-                df = df.rename(columns={'time':'ts','open':'o','high':'h','low':'l','close':'c','volume':'v'})
-        
-        # --- NGUỒN YAHOO CHO BTC & VÀNG ---
-        else:
-            yf_map = {'15m':'15m','1h':'1h','1d':'1d'}
-            fetch_tf = tf if 'm' in tf else ('1h' if any(x in tf for x in ['h', 'H']) else '1d')
-            period = '7d' if 'm' in tf else ('730d' if 'h' in fetch_tf else 'max')
+        # Xác định fetch gốc
+        if 'h' in tf: fetch_tf, period = '1h', '730d'
+        else: fetch_tf, period = '1d', 'max'
             
-            with mute_stdout():
-                df_raw = yf.download(asset['symbol'], period=period, interval=yf_map.get(fetch_tf, '1d'), progress=False)
-            if df_raw.empty: return None
-            if isinstance(df_raw.columns, pd.MultiIndex): df_raw.columns = df_raw.columns.get_level_values(0)
-            df = df_raw.reset_index().rename(columns={df_raw.columns[0]:'ts','Open':'o','High':'h','Low':'l','Close':'c','Volume':'v'})
-
-        # --- LOGIC GỘP NẾN CHUNG ---
-        rule_map = {'2h':'2H', '4h':'4H', '8h':'8H', '12h':'12H', '3d':'3D', '1w':'W-MON', '1M':'ME', '3M':'3ME'}
+        df = yf.download(symbol, period=period, interval=fetch_tf, progress=False, timeout=15)
+        if df.empty: return None
+        
+        # Resample cho các khung trung gian
+        rule_map = {'4h':'4H', '8h':'8H', '12h':'12H', '3d':'3D', '1w':'W-MON', '1m':'ME'}
         if tf in rule_map:
-            df = resample_ohlc(df, rule_map[tf])
+            logic = {'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}
+            df = df.resample(rule_map[tf]).agg(logic).dropna()
             
         return calculate_indicators(df)
     except: return None
 
+def get_live_price(symbol):
+    try:
+        data = yf.download(symbol, period='1d', interval='1m', progress=False, timeout=5)
+        return float(data['Close'].iloc[-1])
+    except: return None
+
 # ==========================================
-# 4. GIAO DIỆN CHÍNH
+# 4. GIAO DIỆN WEB & TÔ MÀU
 # ==========================================
+def style_table(val):
+    color = 'white'
+    if val in ["TĂNG", "HỒI (+)"]: color = "#2ecc71" # Xanh lá
+    elif val in ["GIẢM", "CHỈNH (-)"]: color = "#e74c3c" # Đỏ
+    elif val == "YẾU": color = "#f1c40f" # Vàng
+    return f'color: {color}; font-weight: bold'
+
 def main():
-    st.markdown("<h1 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v113</h1>", unsafe_allow_html=True)
-    now_vn = datetime.now(VN_TZ).strftime('%H:%M:%S - %d/%m/%Y')
-    st.write(f"<p style='text-align: center;'>Giờ Việt Nam: <b>{now_vn}</b></p>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: left;'>🏆 Master Trade Dashboard</h1>", unsafe_allow_html=True)
+    now_vn = datetime.now(VN_TZ).strftime('%H:%M:%S')
+    st.write(f"Cập nhật lúc: {now_vn}")
 
     for asset in LIST_ASSETS:
-        # Lấy giá hiện tại từ khung 1h hoặc 1d
-        df_price = get_unified_data(asset, '1d')
-        live_p = float(df_price['c'].iloc[-1]) if df_price is not None else 0
+        st.markdown(f"### 💠 {asset['name']}")
         
-        with st.expander(f"💠 {asset['name']} | Giá HT: {live_p:,.2f}", expanded=True):
-            data_rows = []
-            sync_list = []
-            for tf in TIMEFRAMES:
-                # Chặn khung quá nhỏ cho VN-INDEX để tránh lag
-                if asset['name'] == "VN-INDEX" and 'm' in tf: continue
-                
-                df = get_unified_data(asset, tf)
-                if df is not None:
-                    last = df.iloc[-1]
-                    p = float(last['c'])
-                    r = float(last['rsi'])
-                    r9 = float(last['rsi9'])
-                    r45 = float(last['rsi45'])
-                    m20 = float(last['ma20'])
-                    
-                    # Trạng thái
-                    if r > r9 and r > r45: r_stat, r_code = "🟢 TĂNG", 1
-                    elif r < r9 and r < r45: r_stat, r_code = "🔴 GIẢM", -1
-                    elif r9 > r > r45: r_stat, r_code = "🟠 CHỈNH (-)", 0
-                    elif r45 > r > r9: r_stat, r_code = "🔵 HỒI (+)", 0
-                    else: r_stat, r_code = "🟡 YẾU", 0
-                    
-                    agreement = "-"
-                    if sync_list:
-                        prev = sync_list[-1]
-                        key = f"{asset['name']}_{prev['tf']}_{tf}"
-                        if r_code == 1 and prev['code'] == 1:
-                            agreement = "MUA (↑)"
-                            if last_alerts.get(key) != "BUY":
-                                try: bot.send_message(CHAT_ID, f"🚀 **ĐỒNG THUẬN MUA: {asset['name']}**\nKhung: `{prev['tf']}-{tf}`\nGiá: `{p:,.1f}`", parse_mode='Markdown')
-                                except: pass
-                                last_alerts[key] = "BUY"
-                        elif r_code == -1 and prev['code'] == -1:
-                            agreement = "BÁN (↓)"
-                            if last_alerts.get(key) != "SELL":
-                                try: bot.send_message(CHAT_ID, f"🔻 **ĐỒNG THUẬN BÁN: {asset['name']}**\nKhung: `{prev['tf']}-{tf}`\nGiá: `{p:,.1f}`", parse_mode='Markdown')
-                                except: pass
-                                last_alerts[key] = "SELL"
-                        else: last_alerts[key] = "NONE"
-
-                    sync_list.append({"tf":tf, "code":r_code})
-                    wave = "🟢 TĂNG" if p > m20 else "🔴 GIẢM"
-                    
-                    data_rows.append({
-                        "KHUNG": tf.upper(),
-                        "SÓNG": wave,
-                        "ĐỒNG THUẬN": agreement,
-                        "RSI 9/45": r_stat,
-                        "RSI": int(r),
-                        "GIÁ": f"{p:,.1f}"
-                    })
+        # Lấy giá hiện tại một lần cho cả bảng
+        live_p = get_live_price(asset['symbol'])
+        live_p_str = f"{live_p:,.1f}" if live_p else "---"
+        
+        data_rows = []
+        for tf in TIMEFRAMES:
+            # Đặc trị VN-Index (Không lấy khung giờ để tránh lỗi Yahoo)
+            if asset['name'] == "VN-INDEX" and 'h' in tf: continue
             
-            if data_rows:
-                st.table(pd.DataFrame(data_rows))
-            else:
-                st.warning(f"🔄 Đang tải dữ liệu cho {asset['name']}...")
+            df = get_data(asset['symbol'], tf)
+            if df is not None:
+                last = df.iloc[-1]
+                p_val = live_p if (tf == '1h' and live_p) else last['Close']
+                r, r9, r45 = last['rsi_val'], last['rsi9'], last['rsi45']
+                
+                # Logic RSI 9/45 (Đúng chuẩn Hồi/Chỉnh)
+                if r > r9 and r > r45: r_stat = "TĂNG"
+                elif r < r9 and r < r45: r_stat = "GIẢM"
+                elif r > r45 and r < r9: r_stat = "CHỈNH (-)"
+                elif r < r45 and r > r9: r_stat = "HỒI (+)"
+                else: r_stat = "YẾU"
+                
+                rows_data = {
+                    "Khung": tf.upper(),
+                    "Sóng": "TĂNG" if p_val > last['ma20'] else "GIẢM",
+                    "RSI 9/45": r_stat,
+                    "P/MA50": "TĂNG" if p_val > last['ma50'] else "GIẢM",
+                    "MA 10/20": "TĂNG" if last['ma10'] > last['ma20'] else "GIẢM",
+                    "RSI": int(r),
+                    "Giá HT": live_p_str # Hiển thị giá đồng nhất như trong hình
+                }
+                data_rows.append(rows_data)
+        
+        if data_rows:
+            df_display = pd.DataFrame(data_rows)
+            # Áp dụng màu sắc cho từng cột
+            st.table(df_display.style.applymap(style_table, subset=['Sóng', 'RSI 9/45', 'P/MA50', 'MA 10/20']))
 
-    time.sleep(WAIT_TIME)
+    # Tự động refresh sau 60s
+    time.sleep(60)
     st.rerun()
 
 if __name__ == "__main__":
