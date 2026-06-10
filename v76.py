@@ -1,7 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import warnings
 import pytz
@@ -15,36 +15,33 @@ TOKEN = '8958414448:AAGIRkKyPtS9fmAUpZ6xAFJtvqUBpoZ63VE'
 CHAT_ID = '6095817110'
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
-# Dùng nguồn Yahoo toàn cầu cho tất cả để tránh bị chặn IP tại Việt Nam
 LIST_ASSETS = [
     {"name": "BITCOIN", "symbol": "BTC-USD"},
     {"name": "VÀNG", "symbol": "GC=F"},
     {"name": "VN-INDEX", "symbol": "^VNINDEX"}
 ]
 
-# Đầy đủ 12 khung thời gian
 TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '3d', '1w', '1M', '3M']
 
-st.set_page_config(page_title="Master Trade Dashboard v120", layout="wide")
+st.set_page_config(page_title="Master Trade Dashboard v121", layout="wide")
 
 # ==========================================
-# 2. HÀM TÍNH TOÁN (RSI RMA & SMA CHUẨN)
+# 2. HÀM TÍNH TOÁN (SMA & RSI RMA CHUẨN)
 # ==========================================
 def calculate_indicators(df):
-    if df is None or len(df) < 10: return None
+    if df is None or len(df) < 15: return None
     try:
         df = df.copy()
-        # Đảm bảo cột giá không bị Multi-index
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-            
+        # Tính MA chuẩn
         df['ma10'] = df['Close'].rolling(10, min_periods=1).mean()
         df['ma20'] = df['Close'].rolling(20, min_periods=1).mean()
         df['ma50'] = df['Close'].rolling(50, min_periods=1).mean()
         
+        # RSI Wilder's (RMA) chuẩn TradingView
         delta = df['Close'].diff()
-        avg_gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=1, adjust=False).mean()
-        avg_loss = (-delta.clip(upper=0)).ewm(alpha=1/14, min_periods=1, adjust=False).mean()
+        gain = delta.clip(lower=0); loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
         
         df['rsi_val'] = 100 - (100 / (1 + avg_gain / avg_loss))
         df['rsi9'] = df['rsi_val'].rolling(9, min_periods=1).mean()
@@ -53,33 +50,44 @@ def calculate_indicators(df):
     except: return None
 
 # ==========================================
-# 3. TRUY XUẤT DỮ LIỆU ĐA TẦNG (FIX LẶP GIÁ)
+# 3. MÁY XỬ LÝ DỮ LIỆU (FIX LỖI KEYERROR)
 # ==========================================
+def clean_columns(df):
+    """San phẳng tiêu đề Multi-Index của Yahoo Finance"""
+    if df is not None and not df.empty:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+    return df
+
 def resample_ohlc(df, rule):
-    df.index = pd.to_datetime(df.index)
-    logic = {'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}
-    return df.resample(rule).agg(logic).dropna()
+    """Gộp nến an toàn với tên cột đã được làm sạch"""
+    if df is None or df.empty: return None
+    try:
+        df = df.copy()
+        df.index = pd.to_datetime(df.index)
+        logic = {'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}
+        # Chỉ lấy những cột tồn tại trong df để tránh KeyError
+        logic = {k: v for k, v in logic.items() if k in df.columns}
+        return df.resample(rule).agg(logic).dropna()
+    except: return None
 
 @st.cache_data(ttl=60)
 def fetch_master_data(symbol, tf_type):
-    """Tải dữ liệu tập trung để không bị trùng số và không bị Yahoo chặn"""
     try:
-        # Nhóm 1: Khung nhỏ (15m, 30m, 1h -> 12h)
         if tf_type == "small":
-            # Tải nến 1h mồi (giới hạn 730 ngày của Yahoo)
+            # Tải nến 1h mồi
             df = yf.download(symbol, period='730d', interval='1h', progress=False)
         else:
-            # Nhóm 2: Khung lớn (1d -> 3M)
+            # Tải nến 1d mồi
             df = yf.download(symbol, period='max', interval='1d', progress=False)
-            
-        if df.empty: return None
-        return df
+        
+        return clean_columns(df)
     except: return None
 
 def get_live_p(symbol):
     try:
         data = yf.download(symbol, period='1d', interval='1m', progress=False)
-        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+        data = clean_columns(data)
         return float(data['Close'].iloc[-1])
     except: return None
 
@@ -94,17 +102,15 @@ def style_text(val):
     return f'color: {color}; font-weight: bold'
 
 def main():
-    st.markdown("<h1 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v120</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v121</h1>", unsafe_allow_html=True)
     now_vn = datetime.now(VN_TZ).strftime('%H:%M:%S - %d/%m/%Y')
-    st.write(f"<p style='text-align: center;'>Cập nhật: <b>{now_vn}</b> (Tự động sau 60s)</p>", unsafe_allow_html=True)
+    st.write(f"<p style='text-align: center;'>Giờ cập nhật (VN): <b>{now_vn}</b></p>", unsafe_allow_html=True)
 
     for asset in LIST_ASSETS:
         with st.status(f"Đang đồng bộ {asset['name']}...", expanded=True) as status:
-            # Lấy giá live thật
             real_p = get_live_p(asset['symbol'])
             real_p_str = f"{real_p:,.1f}" if real_p else "---"
             
-            # Tải 2 bộ dữ liệu mồi tách biệt hoàn toàn (Fix lỗi lặp giá)
             base_small = fetch_master_data(asset['symbol'], "small")
             base_large = fetch_master_data(asset['symbol'], "large")
             
@@ -112,15 +118,14 @@ def main():
             sync_list = []
             
             for tf in TIMEFRAMES:
-                # Đặc trị VN-INDEX: Yahoo ko cung cấp nến 1h
                 if asset['name'] == "VN-INDEX" and any(x in tf for x in ['m', 'h', 'H']): continue
                 
-                # Chọn nguồn dữ liệu mồi
                 df_source = base_small if any(x in tf for x in ['m', 'h', 'H']) else base_large
                 if df_source is None: continue
                 
-                # Resample (Gộp nến)
                 rule_map = {'15m':'15min','30m':'30min','2h':'2H','4h':'4H','8h':'8H','12h':'12H','3d':'3D','1w':'W-MON','1M':'ME','3M':'3ME'}
+                
+                # Resample nếu cần
                 df_tf = resample_ohlc(df_source, rule_map[tf]) if tf in rule_map else df_source
                 
                 df_ind = calculate_indicators(df_tf)
