@@ -1,9 +1,7 @@
 import streamlit as st
-import ccxt
 import yfinance as yf
-from vnstock.api.quote import Quote
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import warnings
 import pytz
@@ -11,154 +9,151 @@ import pytz
 warnings.filterwarnings("ignore")
 
 # ==========================================
-# 1. CẤU HÌNH
+# 1. CẤU HÌNH 
 # ==========================================
 TOKEN = '8958414448:AAGIRkKyPtS9fmAUpZ6xAFJtvqUBpoZ63VE'
 CHAT_ID = '6095817110'
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
 LIST_ASSETS = [
-    {"name": "BITCOIN", "symbol": "BTC/USDT", "yf_symbol": "BTC-USD", "source": "binance"},
-    {"name": "VÀNG", "symbol": "GC=F", "yf_symbol": "GC=F", "source": "yahoo"},
-    {"name": "VN-INDEX", "symbol": "VNINDEX", "yf_symbol": "^VNINDEX", "source": "vnstock"}
+    {"name": "BITCOIN", "symbol": "BTC-USD", "fallback": "BTC-USD"},
+    {"name": "VÀNG", "symbol": "XAUUSD=X", "fallback": "GC=F"},
+    {"name": "VN-INDEX", "symbol": "^VNINDEX", "fallback": "^VNINDEX"}
 ]
 
+# 12 Khung thời gian đầy đủ
 TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '3d', '1w', '1M', '3M']
 
-st.set_page_config(page_title="Master Trade Dashboard v112", layout="wide")
-exchange = ccxt.binance({'timeout': 15000, 'enableRateLimit': True})
+st.set_page_config(page_title="Master Trade Dashboard v106", layout="wide")
 
 # ==========================================
 # 2. BỘ NÃO TÍNH TOÁN (RSI RMA & MA CHUẨN)
 # ==========================================
 def calculate_indicators(df):
-    if df is None or len(df) < 15: return None
+    if df is None or len(df) < 10:
+        return None
     try:
         df = df.copy()
-        # Đảm bảo cột giá là 1 chiều
-        if isinstance(df['c'], pd.DataFrame):
-            df['c'] = df['c'].iloc[:, 0]
-            
-        df['ma20'] = df['c'].rolling(window=20, min_periods=1).mean()
-        df['ma50'] = df['c'].rolling(window=50, min_periods=1).mean()
+        # Tính MA chuẩn
+        df['ma20'] = df['Close'].rolling(window=20, min_periods=1).mean()
+        df['ma50'] = df['Close'].rolling(window=50, min_periods=1).mean()
         
-        delta = df['c'].diff()
+        # RSI chuẩn TradingView (EMA alpha=1/14)
+        delta = df['Close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
         
-        # Công thức RSI chuẩn TradingView (EMA alpha=1/14)
         avg_gain = gain.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1/14, min_periods=1, adjust=False).mean()
         
-        df['rsi'] = 100 - (100 / (1 + avg_gain / avg_loss))
+        rs = avg_gain / avg_loss
+        df['rsi'] = 100 - (100 / (1 + rs))
         df['rsi9'] = df['rsi'].rolling(9, min_periods=1).mean()
         df['rsi45'] = df['rsi'].rolling(45, min_periods=1).mean()
         return df
-    except: return None
+    except:
+        return None
 
 # ==========================================
-# 3. TRUY XUẤT DỮ LIỆU ĐA TẦNG
+# 3. LẤY DỮ LIỆU ĐA KHUNG (FIX LỖI NẾN)
 # ==========================================
-def resample_ohlc(df, rule):
-    df['ts'] = pd.to_datetime(df['ts'])
-    df.set_index('ts', inplace=True)
-    logic = {'o':'first', 'h':'max', 'l':'min', 'c':'last', 'v':'sum'}
-    return df.resample(rule).agg(logic).dropna().reset_index()
-
 @st.cache_data(ttl=30)
-def fetch_data(asset, tf):
+def fetch_market_data(symbol, tf, fallback_symbol):
     try:
-        # A. XỬ LÝ VN-INDEX (Nguồn SSI nội địa)
-        if asset['source'] == "vnstock":
-            q = Quote(symbol='VNINDEX', source='SSI')
-            v_tf = '1H' if 'h' in tf.lower() else '1D'
-            df = q.history(start='2020-01-01', interval=v_tf)
-            if df is None or df.empty: return None
-            df = df.rename(columns={'time':'ts','open':'o','high':'h','low':'l','close':'c','volume':'v'})
-            rule_map = {'4h':'4H','8h':'8H','12h':'12H','3d':'3D','1w':'W-MON','1M':'ME','3M':'3ME'}
-            if tf in rule_map: df = resample_ohlc(df, rule_map[tf])
-            return calculate_indicators(df)
-
-        # B. XỬ LÝ BITCOIN & VÀNG
+        # Xác định khung gốc để tải
+        if any(x in tf for x in ['m', 'h', 'H']):
+            # Các khung từ 15m đến 12h: Tải 1H để gộp (Yahoo 1h rất ổn định)
+            fetch_tf = tf if 'm' in tf else '1h'
+            period = '7d' if 'm' in tf else '730d'
         else:
-            try:
-                if asset['source'] == "binance":
-                    limit = 1000 if tf in ['1w', '1M'] else 500
-                    bars = exchange.fetch_ohlcv(asset['symbol'], timeframe=tf if tf != '3M' else '1M', limit=limit)
-                    df = pd.DataFrame(bars, columns=['ts','o','h','l','c','v'])
-                    if tf == '3M': df = resample_ohlc(df, '3ME')
-                    return calculate_indicators(df)
-                else: raise Exception("Use Yahoo")
-            except:
-                # Fallback Yahoo Finance
-                yf_tf = '1h' if 'h' in tf else '1d'
-                df_yf = yf.download(asset['yf_symbol'], period='max', interval=yf_tf, progress=False)
-                if df_yf.empty: return None
-                # Sửa lỗi Multi-Index của Yahoo khiến lấy giá bị lỗi Series
-                if isinstance(df_yf.columns, pd.MultiIndex):
-                    df_yf.columns = df_yf.columns.get_level_values(0)
-                df_yf = df_yf.reset_index().rename(columns={df_yf.columns[0]:'ts','Open':'o','High':'h','Low':'l','Close':'c'})
-                if tf == '4h': df_yf = resample_ohlc(df_yf, '4H')
-                return calculate_indicators(df_yf)
-    except: return None
+            # Các khung ngày/tuần/tháng: Tải 1D
+            fetch_tf, period = '1d', 'max'
+
+        # Tải từ Yahoo
+        df = yf.download(symbol, period=period, interval=fetch_tf, progress=False, timeout=15)
+        if df is None or df.empty:
+            df = yf.download(fallback_symbol, period=period, interval=fetch_tf, progress=False, timeout=15)
+            
+        if df is None or df.empty:
+            return None
+        
+        # Làm phẳng tiêu đề Yahoo
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
+        df.index = pd.to_datetime(df.index)
+
+        # Logic gộp nến (Resampling)
+        rule_map = {
+            '2h':'2H', '4h':'4H', '8h':'8H', '12h':'12H', 
+            '3d':'3D', '1w':'W-MON', '1M':'ME', '3M':'3ME'
+        }
+        
+        if tf in rule_map and tf != fetch_tf:
+            logic = {'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}
+            df = df.resample(rule_map[tf]).agg(logic).dropna()
+            
+        return calculate_indicators(df)
+    except:
+        return None
+
+def get_live_price(symbol, fallback):
+    """Lấy giá khớp lệnh hiện tại"""
+    try:
+        data = yf.download(symbol, period='1d', interval='1m', progress=False, timeout=5)
+        if data.empty:
+            data = yf.download(fallback, period='1d', interval='1m', progress=False, timeout=5)
+        return float(data['Close'].iloc[-1])
+    except:
+        return None
 
 # ==========================================
 # 4. GIAO DIỆN CHÍNH
 # ==========================================
 def main():
-    st.markdown("<h1 style='text-align: center; color: #00ffcc;'>🚀 Real-time Master Dashboard v112</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00ffcc;'>🚀 Pro Master Dashboard v106</h1>", unsafe_allow_html=True)
+    
     now_vn = datetime.now(VN_TZ).strftime('%H:%M:%S - %d/%m/%Y')
-    st.write(f"<p style='text-align: center;'>Giờ Việt Nam: <b>{now_vn}</b></p>", unsafe_allow_html=True)
+    st.write(f"<p style='text-align: center;'>Giờ Việt Nam: <b>{now_vn}</b> (Tự động cập nhật sau 60s)</p>", unsafe_allow_html=True)
 
     for asset in LIST_ASSETS:
-        st.subheader(f"💠 {asset['name']}")
-        data_rows = []
-        sync_list = []
+        live_p = get_live_price(asset['symbol'], asset['fallback'])
+        p_title = f"{live_p:,.2f}" if live_p is not None else "---"
         
-        for tf in TIMEFRAMES:
-            if asset['name'] == "VN-INDEX" and 'm' in tf: continue
+        with st.expander(f"💠 {asset['name']} | Giá HT: {p_title}", expanded=True):
+            data_rows = []
+            for tf in TIMEFRAMES:
+                # Chặn khung giờ cho VN-INDEX
+                if asset['name'] == "VN-INDEX" and 'h' in tf: 
+                    continue
+                
+                df = fetch_market_data(asset['symbol'], tf, asset['fallback'])
+                if df is not None:
+                    last = df.iloc[-1]
+                    p_val = live_p if (tf in ['15m', '30m', '1h'] and live_p is not None) else last['Close']
+                    r, r9, r45 = last['rsi'], last['rsi9'], last['rsi45']
+                    
+                    # Trạng thái RSI
+                    if r > r9 and r > r45: r_stat = "🟢 TĂNG"
+                    elif r < r9 and r < r45: r_stat = "🔴 GIẢM"
+                    elif r9 > r > r45: r_stat = "🟠 CHỈNH (-)"
+                    elif r45 > r > r9: r_stat = "🔵 HỒI (+)"
+                    else: r_stat = "🟡 YẾU"
+                    
+                    wave = "🟢 TĂNG" if p_val > last['ma20'] else "🔴 GIẢM"
+                    
+                    data_rows.append({
+                        "KHUNG": tf.upper(),
+                        "SÓNG": wave,
+                        "RSI 9/45": r_stat,
+                        "RSI VAL": int(r),
+                        "GIÁ NẾN": f"{p_val:,.1f}"
+                    })
             
-            df = fetch_data(asset, tf)
-            if df is not None:
-                last = df.iloc[-1]
-                
-                # ÉP KIỂU SỐ ĐỂ TRÁNH LỖI SERIES (SỬA LỖI VALUEERROR)
-                p = float(last['c'])
-                r = float(last['rsi'])
-                r9 = float(last['rsi9'])
-                r45 = float(last['rsi45'])
-                m20 = float(last['ma20'])
-                
-                # Trạng thái RSI
-                if r > r9 and r > r45: r_stat, r_code = "🟢 TĂNG", 1
-                elif r < r9 and r < r45: r_stat, r_code = "🔴 GIẢM", -1
-                elif r9 > r > r45: r_stat, r_code = "🟠 CHỈNH (-)", 0
-                elif r45 > r > r9: r_stat, r_code = "🔵 HỒI (+)", 0
-                else: r_stat, r_code = "🟡 YẾU", 0
-                
-                # Xét đồng thuận
-                agreement = "-"
-                if sync_list:
-                    prev = sync_list[-1]
-                    if r_code == 1 and prev['code'] == 1: agreement = "MUA (↑)"
-                    elif r_code == -1 and prev['code'] == -1: agreement = "BÁN (↓)"
-                
-                sync_list.append({"code": r_code})
-                wave = "🟢 TĂNG" if p > m20 else "🔴 GIẢM"
-                
-                data_rows.append({
-                    "KHUNG": tf.upper(),
-                    "SÓNG": wave,
-                    "ĐỒNG THUẬN": agreement,
-                    "RSI 9/45": r_stat,
-                    "RSI": int(r),
-                    "GIÁ": f"{p:,.1f}"
-                })
-        
-        if data_rows:
-            st.table(pd.DataFrame(data_rows))
-        else:
-            st.warning(f"🔄 Đang đồng bộ hóa dữ liệu cho {asset['name']}...")
+            if data_rows:
+                st.table(pd.DataFrame(data_rows))
+            else:
+                st.info(f"🔄 Đang kết nối nguồn dữ liệu {asset['name']}...")
 
     time.sleep(60)
     st.rerun()
