@@ -11,8 +11,7 @@ warnings.filterwarnings("ignore")
 # ==========================================
 # 1. CẤU HÌNH 
 # ==========================================
-TOKEN = '8958414448:AAGIRkKyPtS9fmAUpZ6xAFJtvqUBpoZ63VE'
-CHAT_ID = '6095817110'
+
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
 LIST_ASSETS = [
