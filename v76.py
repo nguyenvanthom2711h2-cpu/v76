@@ -6,6 +6,12 @@ import time
 import warnings
 import pytz
 
+# Thử import vnstock
+try:
+    from vnstock import stock_historical_data
+except ImportError:
+    st.error("Cần thêm 'vnstock' vào file requirements.txt")
+
 warnings.filterwarnings("ignore")
 
 # ==========================================
@@ -13,27 +19,20 @@ warnings.filterwarnings("ignore")
 # ==========================================
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
-LIST_ASSETS = [
-    {"name": "BITCOIN", "symbol": "BTC-USD"},
-    {"name": "VÀNG", "symbol": "GC=F"}, 
-    {"name": "VN-INDEX", "symbol": "^VNINDEX"}
-]
-
 TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '3d', '1w', '1m', '3m']
 
-st.set_page_config(page_title="Master Trade v151", layout="wide")
+st.set_page_config(page_title="Master Trade v152", layout="wide")
 
 # ==========================================
-# 2. THUẬT TOÁN KỸ THUẬT (AUTO-CLEAN)
+# 2. THUẬT TOÁN KỸ THUẬT (CHUẨN)
 # ==========================================
 def calculate_indicators(df):
     if df is None or len(df) < 50: return None 
     try:
         df = df.copy()
-        # Tìm cột giá đóng cửa bất kể hoa thường hay Multi-Index
-        close_col = [c for c in df.columns if 'close' in str(c).lower()]
-        if not close_col: return None
-        col = close_col[0]
+        # Chuẩn hóa tên cột về chữ thường
+        df.columns = [c.lower() for c in df.columns]
+        col = 'close'
         
         # MA
         df['ma10'] = df[col].rolling(10).mean()
@@ -54,46 +53,50 @@ def calculate_indicators(df):
     except: return None
 
 # ==========================================
-# 3. TRUY XUẤT DỮ LIỆU ĐA NGUỒN V151
+# 3. TRUY XUẤT DỮ LIỆU TỪ NHIỀU NGUỒN
 # ==========================================
-def fetch_data_v151(symbol, tf):
+def fetch_global_data(symbol, tf):
+    """Lấy dữ liệu cho BTC và Vàng từ Yahoo Finance"""
     try:
-        # Chặn khung nhỏ cho VN-INDEX
-        if symbol == "^VNINDEX" and any(x in tf for x in ['m', 'h', 'H']):
-            return None
-            
-        # Chọn Interval
-        if tf in ['15m', '30m']: 
-            interval, period = tf, '60d'
-        elif any(x in tf for x in ['h', '2h', '4h', '8h', '12h']): 
-            interval, period = '1h', '730d' 
-        else: 
-            interval, period = '1d', '20y' # Ép lấy 20 năm cho Index
-            
-        # Tải dữ liệu bằng yf.download (ổn định hơn cho ^VNINDEX)
-        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+        if tf in ['15m', '30m']: interval, period = tf, '60d'
+        elif any(x in tf for x in ['h', '2h', '4h', '8h', '12h']): interval, period = '1h', '730d'
+        else: interval, period = '1d', 'max'
         
+        df = yf.download(symbol, period=period, interval=interval, progress=False)
         if df.empty: return None
-
-        # --- XỬ LÝ LỖI CỘT MỚI CỦA YAHOO (QUAN TRỌNG) ---
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         # Resampling
-        rule_map = {
-            '2h':'2h', '4h':'4h', '8h':'8h', '12h':'12h', 
-            '3d':'3D', '1w':'W-MON', '1m':'ME', '3m':'3ME'
-        }
-        
+        rule_map = {'2h':'2h', '4h':'4h', '8h':'8h', '12h':'12h', '3d':'3D', '1w':'W-MON', '1m':'ME', '3m':'3ME'}
         if tf in rule_map and tf != interval:
-            # Tìm các cột cần thiết cho gộp nến
-            cols = {c.lower(): c for c in df.columns}
-            logic = {cols['open']:'first', cols['high']:'max', cols['low']:'min', cols['close']:'last', cols['volume']:'sum'}
-            df = df.resample(rule_map[tf]).agg(logic).dropna()
-            
+            df = df.resample(rule_map[tf]).agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+        
         return calculate_indicators(df)
-    except Exception as e:
-        return None
+    except: return None
+
+def fetch_vn_data(tf):
+    """Lấy dữ liệu cho VN-INDEX từ VNSTOCK (Nguồn SSI/TCBS)"""
+    try:
+        # Vnstock chỉ lấy được từ khung Ngày trở lên một cách ổn định trên Web
+        if any(x in tf for x in ['m', 'h', 'H']): return None
+        
+        # Lấy dữ liệu Ngày từ Vnstock
+        df = stock_historical_data(symbol='VNINDEX', 
+                                   start_date='2015-01-01', 
+                                   end_date=datetime.now().strftime('%Y-%m-%d'), 
+                                   resolution='1D', type='index', source='SSI')
+        
+        if df is None or df.empty: return None
+        
+        # Resampling cho khung lớn
+        rule_map = {'3d':'3D', '1w':'W-MON', '1m':'ME', '3m':'3ME'}
+        if tf in rule_map:
+            df['time'] = pd.to_datetime(df['time'])
+            df.set_index('time', inplace=True)
+            df = df.resample(rule_map[tf]).agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).dropna()
+        
+        return calculate_indicators(df)
+    except: return None
 
 # ==========================================
 # 4. GIAO DIỆN HIỂN THỊ
@@ -104,56 +107,40 @@ def style_text(val):
     return ''
 
 def main():
-    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v151</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v152</h2>", unsafe_allow_html=True)
     
-    tabs = st.tabs([asset['name'] for asset in LIST_ASSETS])
+    tabs = st.tabs(["BITCOIN", "VÀNG", "VN-INDEX"])
 
-    for i, asset in enumerate(LIST_ASSETS):
+    # XỬ LÝ BITCOIN & VÀNG
+    for i, asset in enumerate([{"n":"BITCOIN","s":"BTC-USD"}, {"n":"VÀNG","s":"GC=F"}]):
         with tabs[i]:
-            msg_area = st.empty()
-            
             data_rows = []
-            with st.spinner(f"Đang phân tích {asset['name']}..."):
+            with st.spinner(f"Đang tải {asset['n']} từ Yahoo..."):
                 for tf in TIMEFRAMES:
-                    df_ind = fetch_data_v151(asset['symbol'], tf)
-                    
-                    if df_ind is not None and not df_ind.empty:
-                        last = df_ind.iloc[-1]
-                        
-                        # Chỉ lấy khi đã tính được RSI45
+                    df = fetch_global_data(asset['s'], tf)
+                    if df is not None and not df.empty:
+                        last = df.iloc[-1]
                         if pd.isna(last['rsi45']): continue
-                        
-                        # Xác định cột giá đóng cửa
-                        c_col = [c for c in df_ind.columns if 'close' in str(c).lower()][0]
-                        p_val = float(last[c_col])
+                        p_val = float(last['close'])
                         r, r9, r45 = float(last['rsi_val']), float(last['rsi9']), float(last['rsi45'])
-                        
-                        # Phân tích
-                        if r > r9 and r > r45: r_stat = "TĂNG"
-                        elif r < r9 and r < r45: r_stat = "GIẢM"
-                        elif r9 > r > r45: r_stat = "CHỈNH (-)"
-                        elif r45 > r > r9: r_stat = "HỒI (+)"
-                        else: r_stat = "YẾU"
-                        
-                        wave = "TĂNG" if p_val > float(last['ma20']) else "GIẢM"
-                        p50 = "TĂNG" if p_val > float(last['ma50']) else "GIẢM"
-                        m1020 = "TĂNG" if float(last['ma10']) > float(last['ma20']) else "GIẢM"
+                        r_stat = "TĂNG" if r>r9 and r>r45 else ("GIẢM" if r<r9 and r<r45 else ("CHỈNH (-)" if r9>r>r45 else ("HỒI (+)" if r45>r>r9 else "YẾU")))
+                        data_rows.append({"KHUNG": tf.upper(), "XU HƯỚNG": "TĂNG" if p_val > last['ma20'] else "GIẢM", "RSI 9/45": r_stat, "P/MA50": "TĂNG" if p_val > last['ma50'] else "GIẢM", "MA 10/20": "TĂNG" if last['ma10']>last['ma20'] else "GIẢM", "RSI": int(r), "GIÁ": f"{p_val:,.1f}"})
+            if data_rows: st.table(pd.DataFrame(data_rows).style.map(style_text))
 
-                        data_rows.append({
-                            "KHUNG": tf.upper(), 
-                            "SÓNG MA20": wave, 
-                            "RSI 9/45": r_stat,
-                            "P/MA50": p50, 
-                            "MA 10/20": m1020,
-                            "RSI": int(r), 
-                            "GIÁ": f"{p_val:,.2f}"
-                        })
-
-            if data_rows:
-                msg_area.success(f"✅ {asset['name']} | Cập nhật: {datetime.now(VN_TZ).strftime('%H:%M:%S')}")
-                st.table(pd.DataFrame(data_rows).style.map(style_text))
-            else:
-                msg_area.warning(f"⚠️ {asset['name']}: Yahoo Finance đang chặn hoặc không đủ dữ liệu nến cho khung này.")
+    # XỬ LÝ VN-INDEX (NGUỒN RIÊNG)
+    with tabs[2]:
+        data_rows_vn = []
+        with st.spinner("Đang tải VN-INDEX từ SSI..."):
+            for tf in ['1d', '3d', '1w', '1m', '3m']:
+                df = fetch_vn_data(tf)
+                if df is not None and not df.empty:
+                    last = df.iloc[-1]
+                    p_val = float(last['close'])
+                    r, r9, r45 = float(last['rsi_val']), float(last['rsi9']), float(last['rsi45'])
+                    r_stat = "TĂNG" if r>r9 and r>r45 else ("GIẢM" if r<r9 and r<r45 else ("CHỈNH (-)" if r9>r>r45 else ("HỒI (+)" if r45>r>r9 else "YẾU")))
+                    data_rows_vn.append({"KHUNG": tf.upper(), "XU HƯỚNG": "TĂNG" if p_val > last['ma20'] else "GIẢM", "RSI 9/45": r_stat, "P/MA50": "TĂNG" if p_val > last['ma50'] else "GIẢM", "MA 10/20": "TĂNG" if last['ma10']>last['ma20'] else "GIẢM", "RSI": int(r), "GIÁ": f"{p_val:,.2f}"})
+        if data_rows_vn: st.table(pd.DataFrame(data_rows_vn).style.map(style_text))
+        else: st.warning("VN-INDEX: Nguồn SSI/TCBS đang bị nghẽn IP. Hãy thử lại sau.")
 
     time.sleep(300)
     st.rerun()
