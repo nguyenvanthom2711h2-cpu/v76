@@ -1,5 +1,5 @@
 streamlit
-yfinance
 pandas
+yfinance
+vnstock
 pytz
-pyTelegramBotAPI
