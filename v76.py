@@ -146,7 +146,7 @@ def main():
                     status_placeholder.error(f"❌ {asset['name']}: Yahoo Finance không cung cấp dữ liệu khung này.")
 
     # Auto-refresh mỗi 5 phút (tránh bị Yahoo khóa IP nếu refresh quá nhanh)
-    time.sleep(300)
+    time.sleep(60)
     st.rerun()
 
 if __name__ == "__main__":
