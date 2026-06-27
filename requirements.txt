@@ -1,5 +1,7 @@
 streamlit
-pandas
 yfinance
 vnstock
+pandas
+numpy
 pytz
+scipy
