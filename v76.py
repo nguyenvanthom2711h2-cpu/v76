@@ -24,21 +24,19 @@ LIST_ASSETS = [
 
 TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '3d', '1w', '1m', '3m']
 
-st.set_page_config(page_title="Master Trade v168", layout="wide")
+st.set_page_config(page_title="Master Trade v169", layout="wide")
 
 # ==========================================
 # 2. HÀM LẤY GIÁ LIVE (Fix lỗi đứng giá)
 # ==========================================
-def get_live_price_v168(symbol):
-    # Ưu tiên lấy giá Bitcoin từ Binance (Không bao giờ bị chậm)
+def get_live_price_v169(symbol):
     if "BTC" in symbol:
         try:
-            res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=2)
-            if res.status_code == 200:
-                return float(res.json()['price'])
+            # Lấy giá trực tiếp từ sàn Binance - KHÔNG BỊ CACHE
+            res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=3)
+            return float(res.json()['price'])
         except: pass
     
-    # Với Vàng và VN-INDEX, lấy từ Yahoo nhưng dùng lệnh history ngắn nhất
     try:
         t = yf.Ticker(symbol)
         df_live = t.history(period='1d', interval='1m')
@@ -49,7 +47,7 @@ def get_live_price_v168(symbol):
         return None
 
 # ==========================================
-# 3. THUẬT TOÁN
+# 3. THUẬT TOÁN RSI & PHÂN KỲ
 # ==========================================
 def detect_divergence(df, order=5):
     try:
@@ -59,6 +57,7 @@ def detect_divergence(df, order=5):
         rsi = df['rsi_val'].values
         hi = argrelextrema(high, np.greater, order=order)[0]
         li = argrelextrema(low, np.less, order=order)[0]
+        
         if len(li) >= 2:
             i2, i1 = li[-2], li[-1]
             if low[i1] < low[i2] and rsi[i1] > rsi[i2]:
@@ -80,6 +79,7 @@ def calculate_indicators(df):
         df['ma20'] = df[c].rolling(20).mean()
         df['ma50'] = df[c].rolling(50).mean()
         
+        # RSI Wilder's
         delta = df[c].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -92,14 +92,13 @@ def calculate_indicators(df):
         return df
     except: return None
 
-def fetch_data_v168(symbol, tf):
+def fetch_data_v169(symbol, tf):
     try:
-        # Chọn khoảng thời gian tải dữ liệu tối ưu
         if 'm' in tf: p, f_tf = '5d', tf
         elif 'h' in tf: p, f_tf = '730d', '1h'
         else: p, f_tf = 'max', '1d'
             
-        df = yf.download(symbol, period=p, interval=f_tf, progress=False, timeout=10)
+        df = yf.download(symbol, period=p, interval=f_tf, progress=False, timeout=15)
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
 
@@ -119,13 +118,8 @@ def style_text(val):
     return ''
 
 def main():
-    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v168</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v169</h2>", unsafe_allow_html=True)
     
-    # Nút bấm cưỡng ép xóa Cache nếu bị đứng giá
-    if st.sidebar.button("♻️ Làm mới toàn bộ giá"):
-        st.cache_data.clear()
-        st.rerun()
-
     tabs = st.tabs([asset['name'] for asset in LIST_ASSETS])
 
     for i, asset in enumerate(LIST_ASSETS):
@@ -134,17 +128,17 @@ def main():
             table_ph = st.empty()
             
             with st.spinner(f"Đang đồng bộ {asset['name']}..."):
-                # LẤY GIÁ LIVE CHUẨN TRƯỚC
-                live_p = get_live_price_v168(asset['symbol'])
+                # LẤY GIÁ LIVE TỪ BINANCE/YAHOO TICKER
+                live_p = get_live_price_v169(asset['symbol'])
                 
                 rows = []
                 for tf in TIMEFRAMES:
+                    # VN-INDEX bỏ qua các khung ngắn
                     if asset['symbol'] == "^VNINDEX" and ('m' in tf or 'h' in tf): continue
                     
-                    df = fetch_data_v168(asset['symbol'], tf)
+                    df = fetch_data_v169(asset['symbol'], tf)
                     if df is not None:
                         last = df.iloc[-1]
-                        # Ghi đè giá Live vào hiển thị
                         p_val = live_p if live_p else float(last['Close'])
                         
                         r, r9, r45 = last['rsi_val'], last['rsi9'], last['rsi45']
@@ -168,7 +162,7 @@ def main():
                     status_ph.success(f"💠 {asset['name']} | Live: {datetime.now(VN_TZ).strftime('%H:%M:%S')}")
                     table_ph.table(pd.DataFrame(rows).style.map(style_text))
 
-    time.sleep(60) # Tự động làm mới sau 1 phút
+    time.sleep(60)
     st.rerun()
 
 if __name__ == "__main__":
