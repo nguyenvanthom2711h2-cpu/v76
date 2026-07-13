@@ -23,33 +23,31 @@ LIST_ASSETS = [
 ]
 TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '3d', '1w', '1m']
 
-st.set_page_config(page_title="Master Trade v172", layout="wide")
+st.set_page_config(page_title="Master Trade v173", layout="wide")
 
 # ==========================================
-# 2. HÀM LẤY GIÁ LIVE (ƯU TIÊN BINANCE TUYỆT ĐỐI)
+# 2. LẤY GIÁ LIVE TỪ BINANCE (KHÔNG BAO GIỜ TREO)
 # ==========================================
-def get_live_price_v172(symbol):
+def get_live_price_v173(symbol):
     if "BTC" in symbol:
         try:
-            # Gọi trực tiếp Binance API - Bypass hoàn toàn Yahoo
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT&nocache={random.random()}"
-            res = requests.get(url, timeout=3)
+            # Lấy trực tiếp từ Binance API - Không bị Yahoo block
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT&cb={random.random()}"
+            res = requests.get(url, timeout=2)
             if res.status_code == 200:
-                return float(res.json()['price']), "Binance API"
+                return float(res.json()['price']), "Binance Live"
         except: pass
     
     try:
-        # Với Vàng và Index, dùng Yahoo nhưng ép tải mới
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period='1d', interval='1m')
-        if not df.empty:
-            return float(df['Close'].iloc[-1]), "Yahoo Live"
-        return ticker.fast_info['last_price'], "Yahoo FastInfo"
-    except:
-        return None, "Error"
+        t = yf.Ticker(symbol)
+        # Ép lấy giá nhanh nhất
+        p = t.fast_info['last_price']
+        if p and p > 0: return p, "Yahoo FastInfo"
+    except: pass
+    return None, "Offline"
 
 # ==========================================
-# 3. THUẬT TOÁN RSI & PHÂN KỲ
+# 3. THUẬT TOÁN CHỈ BÁO (CÓ XỬ LÝ LỖI)
 # ==========================================
 def calculate_indicators(df):
     if df is None or len(df) < 40: return None
@@ -69,7 +67,7 @@ def calculate_indicators(df):
         df['rsi9'] = df['rsi_val'].rolling(9).mean()
         df['rsi45'] = df['rsi_val'].rolling(45).mean()
         
-        # Detect Divergence
+        # Divergence
         high, low, rsi = df['High'].values, df['Low'].values, df['rsi_val'].values
         li = argrelextrema(low, np.less, order=5)[0]
         hi = argrelextrema(high, np.greater, order=5)[0]
@@ -81,13 +79,15 @@ def calculate_indicators(df):
         return df
     except: return None
 
-def fetch_history_v172(symbol, tf):
+def fetch_history_v173(symbol, tf):
     try:
         ticker = yf.Ticker(symbol)
         p = '5d' if 'm' in tf else ('730d' if 'h' in tf else 'max')
         f_tf = '1h' if ('h' in tf and tf != '1h') else ('1d' if tf == '3d' else tf)
-        df = ticker.history(period=p, interval=f_tf)
+        # Giới hạn timeout để không bị treo màn hình
+        df = ticker.history(period=p, interval=f_tf, timeout=5)
         if df.empty: return None
+        
         rule = {'2h':'2H','4h':'4H','8h':'8H','12h':'12H','3d':'3D','1w':'W-MON','1m':'ME'}
         if tf in rule:
             df = df.resample(rule[tf]).agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
@@ -103,9 +103,10 @@ def style_text(val):
     return ''
 
 def main():
-    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v172</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v173</h2>", unsafe_allow_html=True)
     
-    if st.sidebar.button("♻️ RESET APP & CACHE"):
+    # Nút Reset
+    if st.sidebar.button("♻️ RESET & CLEAR CACHE"):
         st.cache_data.clear()
         st.rerun()
 
@@ -117,14 +118,16 @@ def main():
             table_ph = st.empty()
             
             with st.spinner(f"Đang đồng bộ {asset['name']}..."):
-                # Lấy giá Live trước
-                live_p, source = get_live_price_v172(asset['symbol'])
+                # LẤY GIÁ LIVE TRƯỚC (QUAN TRỌNG)
+                live_p, source = get_live_price_v173(asset['symbol'])
                 
                 rows = []
                 for tf in TIMEFRAMES:
                     if asset['symbol'] == "^VNINDEX" and ('m' in tf or 'h' in tf): continue
                     
-                    df = fetch_history_v172(asset['symbol'], tf)
+                    df = fetch_history_v173(asset['symbol'], tf)
+                    
+                    # Ưu tiên giá live từ Binance
                     p_val = live_p if live_p else (df['Close'].iloc[-1] if df is not None else 0)
                     
                     if df is not None:
@@ -136,22 +139,22 @@ def main():
                         else: rs = "HỒI (+)"
                         
                         rows.append({
-                            "Khung": tf.upper(), 
-                            "Xu hướng": "TĂNG" if p_val > last['ma20'] else "GIẢM", 
+                            "Khung": tf.upper(), "Xu hướng": "TĂNG" if p_val > last['ma20'] else "GIẢM", 
                             "RSI 9/45": rs, "Phân kỳ RSI": last['div'],
                             "Giá/MA50": "TĂNG" if p_val > last['ma50'] else "GIẢM", 
                             "MA 10/20": "TĂNG" if last['ma10'] > last['ma20'] else "GIẢM",
                             "RSI": int(r), "Giá": f"{p_val:,.1f}"
                         })
                     else:
+                        # TRƯỜNG HỢP YAHOO BLOCK - VẪN HIỆN GIÁ LIVE
                         rows.append({
                             "Khung": tf.upper(), "Xu hướng": "Yahoo Blocked", "RSI 9/45": "Lỗi 404",
                             "Phân kỳ RSI": "-", "Giá/MA50": "-", "MA 10/20": "-",
-                            "RSI": 0, "Giá": f"{p_val:,.1f}"
+                            "RSI": 0, "Giá": f"{p_val:,.1f}" if p_val else "Loading..."
                         })
 
                 if rows:
-                    status_ph.success(f"💠 {asset['name']} | Nguồn: {source} | Cập nhật: {datetime.now(VN_TZ).strftime('%H:%M:%S')}")
+                    status_ph.success(f"💠 {asset['name']} | Nguồn: {source} | {datetime.now(VN_TZ).strftime('%H:%M:%S')}")
                     table_ph.table(pd.DataFrame(rows).style.map(style_text))
 
     time.sleep(60)
