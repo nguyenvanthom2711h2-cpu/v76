@@ -24,16 +24,16 @@ LIST_ASSETS = [
 
 TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '3d', '1w', '1m', '3m']
 
-st.set_page_config(page_title="Master Trade v166", layout="wide")
+st.set_page_config(page_title="Master Trade v167", layout="wide")
 
 # ==========================================
-# 2. HÀM LẤY GIÁ THỰC (Fix lỗi đứng giá)
+# 2. HÀM LẤY GIÁ LIVE THỰC (Fix lỗi đứng giá)
 # ==========================================
-def get_live_price_v166(symbol):
+def get_live_price_v167(symbol):
     if "BTC" in symbol:
         try:
-            # Lấy trực tiếp từ Binance API
-            res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=5)
+            # Lấy giá trực tiếp từ sàn Binance (không bị cache)
+            res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=3)
             return float(res.json()['price'])
         except: pass
     
@@ -87,7 +87,7 @@ def calculate_indicators(df):
         return df
     except: return None
 
-def fetch_data_v166(symbol, tf):
+def fetch_data_v167(symbol, tf):
     try:
         p = '5d' if 'm' in tf else ('730d' if 'h' in tf else 'max')
         f_tf = '1h' if ('h' in tf and tf != '1h') else ('1d' if tf == '3d' else tf)
@@ -106,7 +106,7 @@ def style_text(val):
     return ''
 
 def main():
-    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v166</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v167</h2>", unsafe_allow_html=True)
     tabs = st.tabs([asset['name'] for asset in LIST_ASSETS])
 
     for i, asset in enumerate(LIST_ASSETS):
@@ -114,11 +114,11 @@ def main():
             status_ph = st.empty()
             table_ph = st.empty()
             with st.spinner(f"Đang đồng bộ {asset['name']}..."):
-                live_p = get_live_price_v166(asset['symbol'])
+                live_p = get_live_price_v167(asset['symbol'])
                 rows = []
                 for tf in TIMEFRAMES:
                     if asset['symbol'] == "^VNINDEX" and ('m' in tf or 'h' in tf): continue
-                    df = fetch_data_v166(asset['symbol'], tf)
+                    df = fetch_data_v167(asset['symbol'], tf)
                     if df is not None:
                         last = df.iloc[-1]
                         p_val = live_p if live_p else float(last['Close'])
@@ -128,14 +128,17 @@ def main():
                         elif r9 > r > r45: rs = "CHỈNH (-)"
                         else: rs = "HỒI (+)"
                         rows.append({
-                            "Khung": tf.upper(), "Xu hướng": "TĂNG" if p_val > last['ma20'] else "GIẢM", 
-                            "RSI 9/45": rs, "Phân kỳ RSI": last['div_status'],
+                            "Khung": tf.upper(), 
+                            "Xu hướng": "TĂNG" if p_val > last['ma20'] else "GIẢM", 
+                            "RSI 9/45": rs, 
+                            "Phân kỳ RSI": last['div_status'],
                             "Giá/MA50": "TĂNG" if p_val > last['ma50'] else "GIẢM", 
                             "MA 10/20": "TĂNG" if last['ma10'] > last['ma20'] else "GIẢM",
-                            "RSI": int(r), "Giá": f"{p_val:,.1f}"
+                            "RSI": int(r), 
+                            "Giá": f"{p_val:,.1f}"
                         })
                 if rows:
-                    status_ph.success(f"💠 {asset['name']} | Live: {datetime.now(VN_TZ).strftime('%H:%M:%S')}")
+                    status_ph.success(f"💠 {asset['name']} | Cập nhật: {datetime.now(VN_TZ).strftime('%H:%M:%S')}")
                     table_ph.table(pd.DataFrame(rows).style.map(style_text))
 
     time.sleep(60)
