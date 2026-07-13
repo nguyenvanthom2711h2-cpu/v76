@@ -17,46 +17,49 @@ warnings.filterwarnings("ignore")
 # ==========================================
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 LIST_ASSETS = [
-    {"name": "BITCOIN", "symbol": "BTC-USD", "bin_sym": "BTCUSDT", "cg_id": "bitcoin"},
-    {"name": "VÀNG", "symbol": "GC=F", "bin_sym": None, "cg_id": None}, 
-    {"name": "VN-INDEX", "symbol": "^VNINDEX", "bin_sym": None, "cg_id": None}
+    {"name": "BITCOIN", "symbol": "BTC-USD", "bin_sym": "BTCUSDT"},
+    {"name": "VÀNG", "symbol": "GC=F", "bin_sym": None}, 
+    {"name": "VN-INDEX", "symbol": "^VNINDEX", "bin_sym": None}
 ]
 TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '1w']
 
-st.set_page_config(page_title="Master Trade v180", layout="wide")
+st.set_page_config(page_title="Master Trade v181", layout="wide")
 
 # ==========================================
-# 2. LẤY GIÁ LIVE TỪ COINGECKO & BINANCE (BYPASS ALL)
+# 2. HÀM LẤY GIÁ LIVE (KHÔNG DÙNG YAHOO CHO BTC)
 # ==========================================
-def get_btc_price_v180():
-    """Hỏi đồng thời nhiều nguồn để lấy giá BTC đúng nhất"""
-    # Nguồn 1: CoinGecko
-    try:
-        res = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&t={random.random()}", timeout=3)
-        return float(res.json()['bitcoin']['usd']), "CoinGecko API"
-    except: pass
-
-    # Nguồn 2: Binance
-    try:
-        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT&t={random.random()}", timeout=3)
-        return float(res.json()['price']), "Binance API"
-    except: pass
-
-    # Nguồn 3: Coinbase
-    try:
-        res = requests.get(f"https://api.coinbase.com/v2/prices/BTC-USD/spot?t={random.random()}", timeout=3)
-        return float(res.json()['data']['amount']), "Coinbase API"
-    except: pass
-    
-    return None, "Error"
+def get_price_forced_v181(asset_name, symbol, bin_sym):
+    """Hàm lấy giá mới nhất, bỏ qua hoàn toàn Yahoo nếu là Bitcoin"""
+    if "BITCOIN" in asset_name:
+        # Thử Binance trước
+        try:
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT&cb={random.random()}"
+            res = requests.get(url, timeout=3)
+            return float(res.json()['price']), "Binance Live"
+        except:
+            # Dự phòng CoinGecko
+            try:
+                url = f"https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&cb={random.random()}"
+                res = requests.get(url, timeout=3)
+                return float(res.json()['bitcoin']['usd']), "CoinGecko Live"
+            except:
+                return None, "API Error"
+    else:
+        # Vàng và Index dùng Yahoo
+        try:
+            t = yf.Ticker(symbol)
+            df = t.history(period='1d', interval='1m')
+            if not df.empty: return df['Close'].iloc[-1], "Yahoo Live"
+            return t.fast_info['last_price'], "Yahoo Fast"
+        except:
+            return None, "Yahoo Blocked"
 
 # ==========================================
-# 3. LẤY DỮ LIỆU NẾN (KHÔNG DÙNG YAHOO CHO BTC)
+# 3. LẤY DỮ LIỆU NẾN
 # ==========================================
-def fetch_data_v180(asset, tf):
+def fetch_candles_forced_v181(asset_name, bin_sym, symbol, tf):
     try:
-        # Nếu là BTC, lấy nến từ Binance API
-        if "BTC" in asset['name']:
+        if "BITCOIN" in asset_name:
             mapping = {'15m':'15m', '30m':'30m', '1h':'1h', '2h':'2h', '4h':'4h', '8h':'8h', '12h':'12h', '1d':'1d', '1w':'1w'}
             itv = mapping.get(tf, '1h')
             url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={itv}&limit=150&cb={random.random()}"
@@ -64,13 +67,11 @@ def fetch_data_v180(asset, tf):
             df = pd.DataFrame(res, columns=['ts','Open','High','Low','Close','Vol','C_ts','Q_vol','Tr','T_b','T_q','Ig'])
             df[['Open','High','Low','Close']] = df[['Open','High','Low','Close']].astype(float)
         else:
-            # Vàng/Index vẫn dùng Yahoo nhưng bọc Try-Except
-            t = yf.Ticker(asset['symbol'])
+            t = yf.Ticker(symbol)
             df = t.history(period='max' if 'd' in tf else '5d', interval=tf)
             if df.empty: return None
-            df = df.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close'})
-
-        # Tính toán chỉ báo
+        
+        # Chỉ báo
         df = df.copy()
         c = 'Close'
         df['ma10'] = df[c].rolling(10).mean()
@@ -81,8 +82,7 @@ def fetch_data_v180(asset, tf):
         ag = gain.ewm(alpha=1/14, adjust=False).mean()
         al = loss.ewm(alpha=1/14, adjust=False).mean()
         df['rsi'] = 100 - (100 / (1 + ag / al))
-        df['rsi9'] = df['rsi'].rolling(9).mean()
-        df['rsi45'] = df['rsi'].rolling(45).mean()
+        df['rsi9'], df['rsi45'] = df['rsi'].rolling(9).mean(), df['rsi'].rolling(45).mean()
         
         # Phân kỳ
         df['div'] = "-"
@@ -95,18 +95,15 @@ def fetch_data_v180(asset, tf):
         return df
     except: return None
 
-# ==========================================
-# 4. GIAO DIỆN
-# ==========================================
 def style_text(val):
     if val in ["TĂNG", "HỘI TỤ (MUA) 🚀"]: return 'color: #00ff88;'
     if val in ["GIẢM", "PHÂN KỲ (BÁN) 📉"]: return 'color: #ff4444;'
     return ''
 
 def main():
-    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v180</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v181</h2>", unsafe_allow_html=True)
     
-    if st.sidebar.button("♻️ ÉP TẢI LẠI GIÁ MỚI"):
+    if st.sidebar.button("♻️ RESET CACHE (NHẤN KHI GIÁ ĐỨNG)"):
         st.cache_data.clear()
         st.rerun()
 
@@ -117,24 +114,17 @@ def main():
             status_ph, table_ph = st.empty(), st.empty()
             
             with st.spinner(f"Đang đồng bộ {asset['name']}..."):
-                # LẤY GIÁ LIVE
-                if "BTC" in asset['name']:
-                    live_p, src = get_btc_price_v180()
-                else:
-                    try:
-                        ticker = yf.Ticker(asset['symbol'])
-                        live_p = ticker.history(period='1d')['Close'].iloc[-1]
-                        src = "Yahoo Live"
-                    except: live_p, src = None, "Blocked"
+                # 1. LẤY GIÁ LIVE THỰC TẾ
+                p_live, src = get_price_forced_v181(asset['name'], asset['symbol'], asset['bin_sym'])
                 
                 rows = []
                 for tf in TIMEFRAMES:
                     if asset['symbol'] == "^VNINDEX" and ('m' in tf or 'h' in tf): continue
                     
-                    df = fetch_data_v180(asset, tf)
+                    df = fetch_candles_forced_v181(asset['name'], asset['bin_sym'], asset['symbol'], tf)
                     if df is not None:
                         last = df.iloc[-1]
-                        p_val = live_p if live_p else last['Close']
+                        p_val = p_live if p_live else last['Close']
                         r = last['rsi']
                         rs = "TĂNG" if (r > last['rsi9'] and r > last['rsi45']) else "GIẢM"
                         
@@ -151,7 +141,7 @@ def main():
                     status_ph.success(f"💠 {asset['name']} | Nguồn: {src} | {datetime.now(VN_TZ).strftime('%H:%M:%S')}")
                     table_ph.table(pd.DataFrame(rows).style.map(style_text))
                 else:
-                    st.error(f"⚠️ {asset['name']} đang bị lỗi kết nối dữ liệu.")
+                    st.error("⚠️ Không thể kết nối dữ liệu nến.")
 
     time.sleep(60)
     st.rerun()
