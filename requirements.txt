@@ -1,7 +1,7 @@
+text
 streamlit
-yfinance
-vnstock
+yfinance>=0.2.40
 pandas
 numpy
-pytz
 scipy
+pytz
