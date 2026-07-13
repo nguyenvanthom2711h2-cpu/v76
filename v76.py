@@ -1,12 +1,13 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from datetime import datetime
 import time
 import warnings
 import pytz
 import requests
+import random
 from scipy.signal import argrelextrema
 
 warnings.filterwarnings("ignore")
@@ -16,76 +17,49 @@ warnings.filterwarnings("ignore")
 # ==========================================
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 LIST_ASSETS = [
-    {"name": "BITCOIN", "symbol": "BTC-USD", "bin_sym": "BTCUSDT"},
-    {"name": "VÀNG", "symbol": "GC=F", "bin_sym": None}, 
-    {"name": "VN-INDEX", "symbol": "^VNINDEX", "bin_sym": None}
+    {"name": "BITCOIN", "symbol": "BTC-USD", "binance": "BTCUSDT"},
+    {"name": "VÀNG", "symbol": "GC=F", "binance": None}, 
+    {"name": "VN-INDEX", "symbol": "^VNINDEX", "binance": None}
 ]
 TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d', '1w']
 
-st.set_page_config(page_title="Master Trade v178", layout="wide")
+st.set_page_config(page_title="Master Trade v179", layout="wide")
 
 # ==========================================
-# 2. HÀM LẤY GIÁ LIVE THỰC TẾ (CHỐNG ĐỨNG GIÁ)
+# 2. LẤY DỮ LIỆU TỪ BINANCE (CHO BITCOIN)
 # ==========================================
-def get_btc_price_ultra():
-    """Lấy giá BTC từ Coinbase API - Cực kỳ ổn định trên Cloud"""
+def fetch_binance_v179(symbol, interval):
+    """Lấy nến từ Binance - Tuyệt đối không dùng Yahoo"""
     try:
-        res = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=3)
-        return float(res.json()['data']['amount'])
-    except:
-        try:
-            res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=3)
-            return float(res.json()['price'])
-        except: return None
-
-def get_live_price_v178(asset):
-    if "BTC" in asset['name']:
-        p = get_btc_price_ultra()
-        return p, "Coinbase/Binance"
-    
-    try:
-        # Với Vàng và Index, thử dùng yfinance nhưng không dùng cache
-        t = yf.Ticker(asset['symbol'])
-        df = t.history(period='1d', interval='1m')
-        if not df.empty: return df['Close'].iloc[-1], "Yahoo Live"
-        return t.fast_info['last_price'], "Yahoo Fast"
-    except:
-        return None, "Blocked"
-
-# ==========================================
-# 3. HÀM LẤY DỮ LIỆU NẾN (BYPASS YAHOO)
-# ==========================================
-def fetch_candles_v178(asset, tf):
-    try:
-        # Nếu là Bitcoin, lấy nến từ Binance API (Không dùng Yahoo)
-        if "BTC" in asset['name']:
-            mapping = {'15m':'15m', '30m':'30m', '1h':'1h', '2h':'2h', '4h':'4h', '8h':'8h', '12h':'12h', '1d':'1d', '1w':'1w'}
-            itv = mapping.get(tf, '1h')
-            url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={itv}&limit=100"
-            res = requests.get(url, timeout=5).json()
-            df = pd.DataFrame(res, columns=['ts','Open','High','Low','Close','Vol','C_ts','Q_vol','Tr','T_b','T_q','Ig'])
-            df[['Open','High','Low','Close']] = df[['Open','High','Low','Close']].astype(float)
-            return df
-        
-        # Với Vàng/Index, dùng yfinance tải nến
-        ticker = yf.Ticker(asset['symbol'])
-        p = '5d' if 'm' in tf else ('730d' if 'h' in tf else 'max')
-        f_tf = '1h' if ('h' in tf and tf != '1h') else ('1d' if tf == '3d' else tf)
-        df = ticker.history(period=p, interval=f_tf)
-        if df.empty: return None
-        
-        # Gộp nến nếu cần
-        rule = {'2h':'2H','4h':'4H','8h':'8H','12h':'12H','3d':'3D','1w':'W-MON'}
-        if tf in rule:
-            df = df.resample(rule[tf]).agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
+        mapping = {'15m':'15m', '30m':'30m', '1h':'1h', '2h':'2h', '4h':'4h', '8h':'8h', '12h':'12h', '1d':'1d', '1w':'1w'}
+        bin_int = mapping.get(interval, '1h')
+        # Thêm random param để bypass cache của server
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={bin_int}&limit=150&t={random.random()}"
+        res = requests.get(url, timeout=5).json()
+        df = pd.DataFrame(res, columns=['ts', 'Open', 'High', 'Low', 'Close', 'Vol', 'C_ts', 'Q_vol', 'Tr', 'T_b', 'T_q', 'Ig'])
+        df[['Open', 'High', 'Low', 'Close']] = df[['Open', 'High', 'Low', 'Close']].astype(float)
         return df
     except: return None
 
+def get_live_price_v179(symbol):
+    if "BTC" in symbol:
+        try:
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT&t={random.random()}"
+            return float(requests.get(url, timeout=3).json()['price']), "Binance API"
+        except: return None, "Offline"
+    
+    try:
+        t = yf.Ticker(symbol)
+        df = t.history(period='1d', interval='1m')
+        if not df.empty: return df['Close'].iloc[-1], "Yahoo Live"
+        return t.fast_info['last_price'], "Yahoo Fast"
+    except: return None, "Yahoo Blocked"
+
 # ==========================================
-# 4. CHỈ BÁO & GIAO DIỆN
+# 3. THUẬT TOÁN CHỈ BÁO
 # ==========================================
 def calculate_indicators(df):
-    if df is None or len(df) < 30: return None
+    if df is None or len(df) < 40: return None
     df = df.copy()
     c = 'Close'
     df['ma10'] = df[c].rolling(10).mean()
@@ -99,26 +73,27 @@ def calculate_indicators(df):
     df['rsi9'] = df['rsi'].rolling(9).mean()
     df['rsi45'] = df['rsi'].rolling(45).mean()
     
-    # Divergence
     df['div'] = "-"
     hi = argrelextrema(df['High'].values, np.greater, order=5)[0]
     li = argrelextrema(df['Low'].values, np.less, order=5)[0]
     if len(li) >= 2 and df[c].iloc[li[-1]] < df[c].iloc[li[-2]] and df['rsi'].iloc[li[-1]] > df['rsi'].iloc[li[-2]]:
-        df.loc[df.index[-1], 'div'] = "HỘI TỤ (MUA) 🚀"
+        if (len(df)-1-li[-1]) < 10: df.loc[df.index[-1], 'div'] = "HỘI TỤ (MUA) 🚀"
     if len(hi) >= 2 and df[c].iloc[hi[-1]] > df[c].iloc[hi[-2]] and df['rsi'].iloc[hi[-1]] < df['rsi'].iloc[hi[-2]]:
-        df.loc[df.index[-1], 'div'] = "PHÂN KỲ (BÁN) 📉"
+        if (len(df)-1-hi[-1]) < 10: df.loc[df.index[-1], 'div'] = "PHÂN KỲ (BÁN) 📉"
     return df
 
+# ==========================================
+# 4. GIAO DIỆN
+# ==========================================
 def style_text(val):
     if val in ["TĂNG", "HỘI TỤ (MUA) 🚀"]: return 'color: #00ff88;'
     if val in ["GIẢM", "PHÂN KỲ (BÁN) 📉"]: return 'color: #ff4444;'
     return ''
 
 def main():
-    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v178</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #00ffcc;'>🚀 Master Trade Dashboard v179</h2>", unsafe_allow_html=True)
     
-    # Nút ép reset
-    if st.sidebar.button("♻️ RESET DỮ LIỆU CŨ"):
+    if st.sidebar.button("♻️ XOÁ CACHE & TẢI LẠI"):
         st.cache_data.clear()
         st.rerun()
 
@@ -127,16 +102,24 @@ def main():
     for i, asset in enumerate(LIST_ASSETS):
         with tabs[i]:
             status_ph, table_ph = st.empty(), st.empty()
+            
             with st.spinner(f"Đang đồng bộ {asset['name']}..."):
-                # 1. LẤY GIÁ LIVE (ĐẢM BẢO NHẢY SỐ)
-                live_p, src = get_live_price_v178(asset)
+                # 1. LẤY GIÁ LIVE
+                live_p, src = get_live_price_v179(asset['symbol'])
                 
                 rows = []
                 for tf in TIMEFRAMES:
                     if asset['symbol'] == "^VNINDEX" and ('m' in tf or 'h' in tf): continue
                     
-                    # 2. LẤY NẾN & TÍNH CHỈ BÁO
-                    df_raw = fetch_candles_v178(asset, tf)
+                    # 2. LẤY DỮ LIỆU NẾN
+                    if asset['binance']:
+                        df_raw = fetch_binance_v179(asset['binance'], tf)
+                    else:
+                        try:
+                            t = yf.Ticker(asset['symbol'])
+                            df_raw = t.history(period='max' if 'd' in tf else '5d', interval=tf)
+                        except: df_raw = None
+                    
                     df = calculate_indicators(df_raw)
                     
                     if df is not None:
@@ -148,15 +131,13 @@ def main():
                         rows.append({
                             "Khung": tf.upper(), 
                             "Xu hướng": "TĂNG" if p_val > last['ma20'] else "GIẢM", 
-                            "RSI 9/45": rs, 
-                            "Phân kỳ RSI": last['div'],
+                            "RSI 9/45": rs, "Phân kỳ RSI": last['div'],
                             "Giá/MA50": "TĂNG" if p_val > last['ma50'] else "GIẢM", 
                             "MA 10/20": "TĂNG" if last['ma10'] > last['ma20'] else "GIẢM",
-                            "RSI": int(r), 
-                            "Giá": f"{p_val:,.1f}"
+                            "RSI": int(r), "Giá": f"{p_val:,.1f}"
                         })
                     else:
-                        rows.append({"Khung": tf.upper(), "Xu hướng": "Yahoo Blocked", "Giá": f"{live_p:,.1f}" if live_p else "-"})
+                        rows.append({"Khung": tf.upper(), "Xu hướng": "Dữ liệu lỗi", "Giá": f"{live_p:,.1f}" if live_p else "-"})
 
                 if rows:
                     status_ph.success(f"💠 {asset['name']} | Nguồn: {src} | {datetime.now(VN_TZ).strftime('%H:%M:%S')}")
